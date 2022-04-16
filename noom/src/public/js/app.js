@@ -11,6 +11,7 @@ let muted = false;
 let cameraOff = false;
 let roomName;
 let myPeerConnection;
+let myDataChannel;
 
 async function getCameras() {
   try {
@@ -21,7 +22,7 @@ async function getCameras() {
       const option = document.createElement("option");
       option.value = camera.deviceId;
       option.innerText = camera.label;
-      if (currentCamera.label == camera.label) {
+      if (currentCamera.label === camera.label) {
         option.selected = true;
       }
       cameraSelect.appendChild(option);
@@ -82,6 +83,12 @@ function handleCameraClick() {
 
 async function handleCameraChange() {
   await getMedia(cameraSelect.value);
+  if (myPeerConnection) {
+    const videoTrack = myStream.getVideoTracks()[0];
+    const videoSender = myPeerConnection.getSenders()
+      .find((sender) => sender.track.kind === "video");
+    await videoSender.replaceTrack(videoTrack);
+  }
 }
 
 muteBtn.addEventListener("click", handleMuteClick);
@@ -114,16 +121,28 @@ welcomeForm.addEventListener("submit", handleWelcomeSubmit);
 
 // Socket Code
 socket.on("welcome", async () => {
+  myDataChannel = myPeerConnection.createDataChannel("chat");
+  myDataChannel.addEventListener("message", (event) => {
+    console.log(event.data);
+  });
+  console.log("made data channel");
   const offer = await myPeerConnection.createOffer();
-  myPeerConnection.setLocalDescription(offer);
+  await myPeerConnection.setLocalDescription(offer);
   console.log("sent the offer");
   socket.emit("offer", offer, roomName);
 });
 
 socket.on("offer", async (offer) => {
-  myPeerConnection.setRemoteDescription(offer);
+  myPeerConnection.addEventListener("datachannel", (event) => {
+    myDataChannel = event.channel;
+    myDataChannel.addEventListener("message", (event) => {
+      console.log(event.data);
+    });
+  });
+  console.log("received the offer");
+  await myPeerConnection.setRemoteDescription(offer);
   const answer = await myPeerConnection.createAnswer();
-  myPeerConnection.setLocalDescription(answer);
+  await myPeerConnection.setLocalDescription(answer);
   socket.emit("answer", answer, roomName);
 })
 
@@ -131,9 +150,39 @@ socket.on("answer", answer => {
   myPeerConnection.setRemoteDescription(answer);
 });
 
+socket.on("ice", ice => {
+  console.log("received candidate");
+  myPeerConnection.addIceCandidate(ice);
+});
+
 // RTC Code
 function makeConnection() {
-  myPeerConnection = new RTCPeerConnection();
+  myPeerConnection = new RTCPeerConnection({
+    iceServers: [
+      {
+        urls: [
+          "stun:stun.l.google.com:19302",
+          "stun:stun1.l.google.com:19302",
+          "stun:stun2.l.google.com:19302",
+          "stun:stun3.l.google.com:19302",
+          "stun:stun4.l.google.com:19302",
+        ]
+      }
+    ]
+  });
+  myPeerConnection.addEventListener("icecandidate", handleIce);
+  myPeerConnection.addEventListener("addstream", handleAddStream);
   myStream.getTracks()
     .forEach(track => myPeerConnection.addTrack(track, myStream));
+}
+
+
+function handleIce(data) {
+  socket.emit("ice", data.candidate, roomName);
+}
+
+
+function handleAddStream(data) {
+  const peerFace = document.getElementById("peerFace");
+  peerFace.srcObject = data.stream;
 }
